@@ -13,7 +13,8 @@ class Config(object):
     # intermediate processing folders
     pdf_dir = os.path.join('data', 'pdf')
     txt_dir = os.path.join('data', 'txt')
-    thumbs_dir = os.path.join('static', 'thumbs')
+    thumbs_dir_local = os.path.join('static', 'thumbs')
+    thumbs_dir = 'http://res.cloudinary.com/hhtzrschc/raw/upload/v1488835904/thumbs/'
     # intermediate pickles
     tfidf_path = 'tfidf.p'
     meta_path = 'tfidf_meta.p'
@@ -22,6 +23,10 @@ class Config(object):
     tweet_path = 'twitter.p' # written by twitter_daemon.py
     # sql database file
     database_path = 'as.db'
+    try:
+        heroku_database_path = os.environ["DATABASE_URL"]
+    except:
+        heroku_database_path = DATABASE_URL=os.popen("heroku config:get DATABASE_URL -a hepthio").read()[:-1]
     search_dict_path = 'search_dict.p'
     
     tmp_dir = 'tmp'
@@ -79,7 +84,7 @@ def open_atomic(filepath, *args, **kwargs):
             if fsync:
                 f.flush()
                 os.fsync(file.fileno())
-        os.rename(tmppath, filepath)
+        os.replace(tmppath, filepath)
 
 def safe_pickle_dump(obj, fname):
     with open_atomic(fname, 'wb') as f:
@@ -96,4 +101,4 @@ def strip_version(idstr):
 
 # "1511.08198v1" is an example of a valid arxiv id that we accept
 def isvalidid(pid):
-  return re.match('^\d+\.\d+(v\d+)?$', pid)
+  return re.match('^([a-z]+(-[a-z]+)?/)?\d+(\.\d+)?(v\d+)?$', pid)
