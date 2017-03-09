@@ -230,6 +230,15 @@ def intmain():
                         msg='Showing most recent Arxiv papers:')
   return render_template('main.html', **ctx)
 
+@app.route("/<request_cat>/<request_pid>")
+def rankold(request_cat,request_pid):
+  request_pid =  request_cat+"/"+request_pid
+  if not isvalidid(request_pid):
+    return '' # these are requests for icons, things like robots.txt, etc
+  papers = papers_similar(request_pid)
+  ctx = default_context(papers, render_format='paper')
+  return render_template('main.html', **ctx)
+
 @app.route("/<request_pid>")
 def rank(request_pid=None):
   if not isvalidid(request_pid):

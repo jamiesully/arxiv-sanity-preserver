@@ -79,7 +79,7 @@ def open_atomic(filepath, *args, **kwargs):
             if fsync:
                 f.flush()
                 os.fsync(file.fileno())
-        os.rename(tmppath, filepath)
+        os.replace(tmppath, filepath)
 
 def safe_pickle_dump(obj, fname):
     with open_atomic(fname, 'wb') as f:
@@ -96,4 +96,4 @@ def strip_version(idstr):
 
 # "1511.08198v1" is an example of a valid arxiv id that we accept
 def isvalidid(pid):
-  return re.match('^\d+\.\d+(v\d+)?$', pid)
+  return re.match('^([a-z]+(-[a-z]+)?/)?\d+(\.\d+)?(v\d+)?$', pid)
