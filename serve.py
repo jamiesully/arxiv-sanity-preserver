@@ -2,9 +2,9 @@ import os
 import json
 import time
 import pickle
-import dateutil.parser
 import argparse
-from random import shuffle
+import dateutil.parser
+from random import shuffle, randrange
 
 import numpy as np
 from sqlite3 import dbapi2 as sqlite3
@@ -13,6 +13,7 @@ from flask import Flask, request, session, url_for, redirect, \
      render_template, abort, g, flash, _app_ctx_stack
 from flask_limiter import Limiter
 from werkzeug import check_password_hash, generate_password_hash
+import pymongo
 
 from utils import safe_pickle_dump, strip_version, isvalidid, Config
 
@@ -27,8 +28,6 @@ else:
 app = Flask(__name__)
 app.config.from_object(__name__)
 limiter = Limiter(app, global_limits=["100 per hour", "20 per minute"])
-
-SEARCH_DICT = {}
 
 # -----------------------------------------------------------------------------
 # utilities for database interactions 
@@ -80,17 +79,6 @@ def teardown_request(exception):
 # -----------------------------------------------------------------------------
 # search/sort functionality
 # -----------------------------------------------------------------------------
-def date_sort():
-  scores = []
-  for pid,p in db.items():
-    timestruct = dateutil.parser.parse(p['updated'])
-    p['time_updated'] = int(timestruct.strftime("%s")) # store in struct for future convenience
-    timestruct = dateutil.parser.parse(p['published'])
-    p['time_published'] = int(timestruct.strftime("%s")) # store in struct for future convenience
-    scores.append((p['time_updated'], p))
-  scores.sort(reverse=True, key=lambda x: x[0])
-  out = [sp[1] for sp in scores]
-  return out
 
 def papers_search(qraw):
   qparts = qraw.lower().strip().split() # split by spaces
@@ -198,11 +186,16 @@ def encode_json(ps, n=10, send_images=True, send_abstracts=True):
       struct['img'] = '/static/thumbs/' + idvv.replace('/','') + '.pdf.jpg'
     struct['tags'] = [t['term'] for t in p['tags']]
     
+    # render time information nicely
     timestruct = dateutil.parser.parse(p['updated'])
     struct['published_time'] = '%s/%s/%s' % (timestruct.month, timestruct.day, timestruct.year)
     timestruct = dateutil.parser.parse(p['published'])
     struct['originally_published_time'] = '%s/%s/%s' % (timestruct.month, timestruct.day, timestruct.year)
 
+    # fetch amount of discussion on this paper
+    struct['num_discussion'] = comments.count({ 'pid': p['_rawid'] })
+
+    # arxiv comments from the authors (when they submit the paper)
     cc = p.get('arxiv_comment', '')
     if len(cc) > 100:
       cc = cc[:100] + '...' # crop very long comments
@@ -217,14 +210,14 @@ def encode_json(ps, n=10, send_images=True, send_abstracts=True):
 
 def default_context(papers, **kws):
   top_papers = encode_json(papers, args.num_results)
-  ans = dict(papers=top_papers, numresults=len(papers), totpapers=len(db), msg='')
+  ans = dict(papers=top_papers, numresults=len(papers), totpapers=len(db), tweets=[], msg='')
   ans.update(kws)
   return ans
 
 @app.route("/")
 def intmain():
   vstr = request.args.get('vfilter', 'all')
-  papers = DATE_SORTED_PAPERS # precomputed
+  papers = [db[pid] for pid in DATE_SORTED_PIDS] # precomputed
   papers = papers_filter_version(papers, vstr)
   ctx = default_context(papers, render_format='recent',
                         msg='Showing most recent Arxiv papers:')
@@ -246,6 +239,116 @@ def rank(request_pid=None):
   papers = papers_similar(request_pid)
   ctx = default_context(papers, render_format='paper')
   return render_template('main.html', **ctx)
+
+@app.route('/discuss', methods=['GET'])
+def discuss():
+  """ return discussion related to a paper """
+  pid = request.args.get('id', '') # paper id of paper we wish to discuss
+  papers = [db[pid]] if pid in db else []
+
+  # fetch the comments
+  comms_cursor = comments.find({ 'pid':pid }).sort([('time_posted', pymongo.DESCENDING)])
+  comms = list(comms_cursor)
+  for c in comms:
+    c['_id'] = str(c['_id']) # have to convert these to strs from ObjectId, and backwards later http://api.mongodb.com/python/current/tutorial.html
+
+  # fetch the counts for all tags
+  tag_counts = []
+  for c in comms:
+    cc = [tags_collection.count({ 'comment_id':c['_id'], 'tag_name':t }) for t in TAGS]
+    tag_counts.append(cc);
+
+  # and render
+  ctx = default_context(papers, render_format='default', comments=comms, gpid=pid, tags=TAGS, tag_counts=tag_counts)
+  return render_template('discuss.html', **ctx)
+
+@app.route('/comment', methods=['POST'])
+def comment():
+  """ user wants to post a comment """
+  anon = int(request.form['anon'])
+
+  if g.user and (not anon):
+    username = get_username(session['user_id'])
+  else:
+    # generate a unique username if user wants to be anon, or user not logged in.
+    username = 'anon-%s-%s' % (str(int(time.time())), str(randrange(1000)))
+
+  # process the raw pid and validate it, etc
+  try:
+    pid = request.form['pid']
+    if not pid in db: raise Exception("invalid pid")
+    version = db[pid]['_version'] # most recent version of this paper
+  except Exception as e:
+    print(e)
+    return 'bad pid. This is most likely Andrej\'s fault.'
+
+  # create the entry
+  entry = {
+    'user': username,
+    'pid': pid, # raw pid with no version, for search convenience
+    'version': version, # version as int, again as convenience
+    'conf': request.form['conf'],
+    'anon': anon,
+    'time_posted': time.time(),
+    'text': request.form['text'],
+  }
+
+  # enter into database
+  print(entry)
+  comments.insert_one(entry)
+  return 'OK'
+
+@app.route("/discussions", methods=['GET'])
+def discussions():
+  # return most recently discussed papers
+  comms_cursor = comments.find().sort([('time_posted', pymongo.DESCENDING)]).limit(100)
+
+  # get the (unique) set of papers.
+  papers = []
+  have = set()
+  for e in comms_cursor:
+    pid = e['pid']
+    if pid in db and not pid in have:
+      have.add(pid)
+      papers.append(db[pid])
+
+  ctx = default_context(papers, render_format="discussions")
+  return render_template('main.html', **ctx)
+
+@app.route('/toggletag', methods=['POST'])
+def toggletag():
+
+  if not g.user: 
+    return 'You have to be logged in to tag. Sorry - otherwise things could get out of hand FAST.'
+
+  # get the tag and validate it as an allowed tag
+  tag_name = request.form['tag_name']
+  if not tag_name in TAGS:
+    print('tag name %s is not in allowed tags.' % (tag_name, ))
+    return "Bad tag name. This is most likely Andrej's fault."
+
+  pid = request.form['pid']
+  comment_id = request.form['comment_id']
+  username = get_username(session['user_id'])
+  time_toggled = time.time()
+  entry = {
+    'username': username,
+    'pid': pid,
+    'comment_id': comment_id,
+    'tag_name': tag_name,
+    'time': time_toggled,
+  }
+
+  # remove any existing entries for this user/comment/tag
+  result = tags_collection.delete_one({ 'username':username, 'comment_id':comment_id, 'tag_name':tag_name })
+  if result.deleted_count > 0:
+    print('cleared an existing entry from database')
+  else:
+    print('no entry existed, so this is a toggle ON. inserting:')
+    print(entry)
+    tags_collection.insert_one(entry)
+
+  return 'OK'
 
 @app.route("/search", methods=['GET'])
 def search():
@@ -275,7 +378,8 @@ def top():
   legend = {'day':1, '3days':3, 'week':7, 'month':30, 'year':365, 'alltime':10000}
   tt = legend.get(ttstr, 7)
   curtime = int(time.time()) # in seconds
-  papers = [p for p in TOP_SORTED_PAPERS if curtime - p['time_published'] < tt*24*60*60]
+  top_sorted_papers = [db[p] for p in TOP_SORTED_PIDS]
+  papers = [p for p in top_sorted_papers if curtime - p['time_published'] < tt*24*60*60]
   papers = papers_filter_version(papers, vstr)
   ctx = default_context(papers, render_format='top',
                         msg='Top papers based on people\'s libraries:')
@@ -284,9 +388,17 @@ def top():
 @app.route('/toptwtr', methods=['GET'])
 def toptwtr():
   """ return top papers """
-  papers = TWITTER_TOP
-  ctx = default_context(papers, render_format='toptwtr',
-                        msg='Top papers mentioned on Twitter over last 5 days:')
+  ttstr = request.args.get('timefilter', 'day') # default is day
+  tweets_top = {'day':tweets_top1, 'week':tweets_top7, 'month':tweets_top30}[ttstr]
+  cursor = tweets_top.find().sort([('vote', pymongo.DESCENDING)]).limit(100)
+  papers, tweets = [], []
+  for rec in cursor:
+    if rec['pid'] in db:
+      papers.append(db[rec['pid']])
+      tweet = {k:v for k,v in rec.items() if k != '_id'}
+      tweets.append(tweet)
+  ctx = default_context(papers, render_format='toptwtr', tweets=tweets,
+                        msg='Top papers mentioned on Twitter over last ' + ttstr + ':')
   return render_template('main.html', **ctx)
 
 @app.route('/library')
@@ -393,8 +505,13 @@ if __name__ == "__main__":
   args = parser.parse_args()
   print(args)
 
-  print('loading the paper database', Config.db_path)
-  db = pickle.load(open(Config.db_path, 'rb'))
+  if not os.path.isfile(Config.database_path):
+    print('did not find as.db, trying to create an empty database from schema.sql...')
+    print('this needs sqlite3 to be installed!')
+    os.system('sqlite3 as.db < schema.sql')
+
+  print('loading the paper database', Config.db_serve_path)
+  db = pickle.load(open(Config.db_serve_path, 'rb'))
   
   print('loading tfidf_meta', Config.meta_path)
   meta = pickle.load(open(Config.meta_path, "rb"))
@@ -405,101 +522,31 @@ if __name__ == "__main__":
   sim_dict = pickle.load(open(Config.sim_path, "rb"))
 
   print('loading user recommendations', Config.user_sim_path)
+  user_sim = {}
   if os.path.isfile(Config.user_sim_path):
     user_sim = pickle.load(open(Config.user_sim_path, 'rb'))
-  else:
-    user_sim = {}
+  
+  print('loading serve cache...', Config.serve_cache_path)
+  cache = pickle.load(open(Config.serve_cache_path, "rb"))
+  DATE_SORTED_PIDS = cache['date_sorted_pids']
+  TOP_SORTED_PIDS = cache['top_sorted_pids']
+  SEARCH_DICT = cache['search_dict']
 
-  print('loading twitter top', Config.tweet_path)
-  if os.path.isfile(Config.tweet_path):
-    TWITTER_TOP = pickle.load(open(Config.tweet_path, 'rb'))
-    TWITTER_TOP = [db[pid] for count,pid in TWITTER_TOP]
-  else:
-    TWITTER_TOP = []
+  print('connecting to mongodb...')
+  client = pymongo.MongoClient()
+  mdb = client.arxiv
+  tweets_top1 = mdb.tweets_top1
+  tweets_top7 = mdb.tweets_top7
+  tweets_top30 = mdb.tweets_top30
+  comments = mdb.comments
+  tags_collection = mdb.tags
+  print('mongodb tweets_top1 collection size:', tweets_top1.count())
+  print('mongodb tweets_top7 collection size:', tweets_top7.count())
+  print('mongodb tweets_top30 collection size:', tweets_top30.count())
+  print('mongodb comments collection size:', comments.count())
+  print('mongodb tags collection size:', tags_collection.count())
 
-  print('precomputing papers date sorted...')
-  DATE_SORTED_PAPERS = date_sort()
-
-  if not os.path.isfile(Config.database_path):
-    print('did not find as.db, trying to create an empty database from schema.sql...')
-    print('this needs sqlite3 to be installed!')
-    os.system('sqlite3 as.db < schema.sql')
-
-  # compute top papers in peoples' libraries
-  print('computing top papers...')
-  def get_popular():
-    sqldb = sqlite3.connect(Config.database_path)
-    sqldb.row_factory = sqlite3.Row # to return dicts rather than tuples
-    libs = sqldb.execute('''select * from library''').fetchall()
-    counts = {}
-    for lib in libs:
-      pid = lib['paper_id']
-      counts[pid] = counts.get(pid, 0) + 1
-    return counts
-  top_counts = get_popular()
-  top_paper_counts = sorted([(v,k) for k,v in top_counts.items() if v > 0], reverse=True)
-  print(top_paper_counts[:min(30, len(top_paper_counts))])
-  TOP_SORTED_PAPERS = [db[q[1]] for q in top_paper_counts]
-
-  # compute min and max time for all papers
-  tts = [time.mktime(dateutil.parser.parse(p['updated']).timetuple()) for pid,p in db.items()]
-  ttmin = min(tts)*1.0
-  ttmax = max(tts)*1.0
-  for pid,p in db.items():
-    tt = time.mktime(dateutil.parser.parse(p['updated']).timetuple())
-    p['tscore'] = (tt-ttmin)/(ttmax-ttmin)
-
-  # some utilities for creating a search index for faster search
-  punc = "'!\"#$%&\'()*+,./:;<=>?@[\\]^_`{|}~'" # removed hyphen from string.punctuation
-  trans_table = {ord(c): None for c in punc}
-  def makedict(s, forceidf=None, scale=1.0):
-    words = set(s.lower().translate(trans_table).strip().split())
-    out = {}
-    for w in words: # todo: if we're using bigrams in vocab then this won't search over them
-      if forceidf is None:
-        if w in vocab:
-          # we have idf for this
-          idfval = idf[vocab[w]]*scale
-        else:
-          idfval = 1.0*scale # assume idf 1.0 (low)
-      else:
-        idfval = forceidf
-      out[w] = idfval
-    return out
-
-  def merge_dicts(dlist):
-    out = {}
-    for d in dlist:
-      for k,v in d.items():
-        out[k] = out.get(k,0) + v
-    return out
-
-  # caching: check if db.p is younger than search_dict.p
-  recompute_index = True
-  if os.path.isfile(Config.search_dict_path):
-    db_modified_time = os.path.getmtime(Config.db_path)
-    search_modified_time = os.path.getmtime(Config.search_dict_path)
-    if search_modified_time > db_modified_time:
-      # search index exists and is more recent, no need
-      recompute_index = False
-  if recompute_index:
-    print('building an index for faster search...')
-    for pid in db:
-      p = db[pid]
-      dict_title = makedict(p['title'], forceidf=5, scale=3)
-      dict_authors = makedict(' '.join(x['name'] for x in p['authors']), forceidf=5)
-      dict_categories = {x['term'].lower():5 for x in p['tags']}
-      if 'and' in dict_authors: 
-        # special case for "and" handling in authors list
-        del dict_authors['and']
-      dict_summary = makedict(p['summary'])
-      SEARCH_DICT[pid] = merge_dicts([dict_title, dict_authors, dict_categories, dict_summary])
-    # and cache it in file
-    print('writing ', Config.search_dict_path, ' as cache...')
-    safe_pickle_dump(SEARCH_DICT, Config.search_dict_path)
-  else:
-    print('loading cached index for faster search from', Config.search_dict_path)
-    SEARCH_DICT = pickle.load(open(Config.search_dict_path, 'rb'))
+  TAGS = ['insightful!', 'thank you', 'inaccurate', 'not constructive', 'troll', 'spam']
 
   # start
   if args.prod:
@@ -515,5 +562,5 @@ if __name__ == "__main__":
     IOLoop.instance().start()
   else:
     print('starting flask!')
-    app.debug = True
-    app.run(port=args.port)
+    app.debug = False
+    app.run(port=args.port, host='0.0.0.0')
