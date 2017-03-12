@@ -20,15 +20,17 @@ class Config(object):
     meta_path = 'tfidf_meta.p'
     sim_path = 'sim_dict.p'
     user_sim_path = 'user_sim.p'
-    tweet_path = 'twitter.p' # written by twitter_daemon.py
     # sql database file
+    db_serve_path = 'db2.p' # an enriched db.p with various preprocessing info
     database_path = 'as.db'
     try:
         heroku_database_path = os.environ["DATABASE_URL"]
     except:
         heroku_database_path = DATABASE_URL=os.popen("heroku config:get DATABASE_URL -a hepthio").read()[:-1]
     search_dict_path = 'search_dict.p'
+    serve_cache_path = 'serve_cache.p'
     
+    banned_path = 'banned.txt' # for twitter users who are banned
     tmp_dir = 'tmp'
 
 # Context managers for atomic writes courtesy of
