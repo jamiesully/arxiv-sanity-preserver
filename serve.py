@@ -195,7 +195,7 @@ def encode_json(ps, n=10, send_images=True, send_abstracts=True):
     if send_abstracts:
       struct['abstract'] = p['summary']
     if send_images:
-      struct['img'] = '/static/thumbs/' + idvv + '.pdf.jpg'
+      struct['img'] = '/static/thumbs/' + idvv.replace('/','') + '.pdf.jpg'
     struct['tags'] = [t['term'] for t in p['tags']]
     
     timestruct = dateutil.parser.parse(p['updated'])

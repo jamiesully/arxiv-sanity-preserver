@@ -23,9 +23,13 @@ n = 0
 for pid,j in db.items():
   n += 1
   idvv = '%sv%d' % (j['_rawid'], j['_version'])
-  txt_path = os.path.join('data', 'txt', idvv) + '.pdf.txt'
+  #Building path for txt files generated from scraped pdfs
+  file_id = j['_rawid'].replace('/','')
+  file_idvv = '%sv%d' % (file_id, j['_version'])
+  txt_path = os.path.join('data', 'txt', file_idvv) + '.pdf.txt'
+                    
   if os.path.isfile(txt_path): # some pdfs dont translate to txt
-    with open(txt_path, 'r') as f:
+    with open(txt_path, 'r', encoding="utf8") as f:
       txt = f.read()
     if len(txt) > 1000 and len(txt) < 500000: # 500K is VERY conservative upper bound
       txt_paths.append(txt_path) # todo later: maybe filter or something some of them
@@ -49,7 +53,7 @@ v = TfidfVectorizer(input='content',
 # create an iterator object to conserve memory
 def make_corpus(paths):
   for p in paths:
-    with open(p, 'r') as f:
+    with open(p, 'r', encoding="utf8", errors='ignore') as f:
       txt = f.read()
     yield txt
 
