@@ -6,9 +6,18 @@ requires: sudo apt-get install imagemagick
 import os
 import time
 import shutil
-from subprocess import Popen
+import argparse
+import cloudinary.uploader
 
+from subprocess import Popen
 from utils import Config
+
+if __name__ == "__main__":
+
+  # parse input arguments
+  parser = argparse.ArgumentParser()
+  parser.add_argument('--verbose', type=bool, default=False, help='Print lots of stuff (gets annoying for large db), default False')
+  args = parser.parse_args()
 
 # make sure imagemagick is installed
 if not shutil.which('convert'): # shutil.which needs Python 3.3+
@@ -17,7 +26,7 @@ if not shutil.which('convert'): # shutil.which needs Python 3.3+
 
 # create if necessary the directories we're using for processing and output
 pdf_dir = os.path.join('data', 'pdf')
-if not os.path.exists(Config.thumbs_dir): os.makedirs(Config.thumbs_dir)
+if not os.path.exists(Config.thumbs_dir_local): os.makedirs(Config.thumbs_dir_local)
 if not os.path.exists(Config.tmp_dir): os.makedirs(Config.tmp_dir)
 
 # fetch all pdf filenames in the pdf directory
@@ -27,10 +36,11 @@ pdf_files = [x for x in files_in_pdf_dir if x.endswith('.pdf')] # filter to just
 # iterate over all pdf files and create the thumbnails
 for i,p in enumerate(pdf_files):
   pdf_path = os.path.join(pdf_dir, p)
-  thumb_path = os.path.join(Config.thumbs_dir, p + '.jpg')
+  thumb_path = os.path.join(Config.thumbs_dir_local, p + '.jpg')
 
-  if os.path.isfile(thumb_path): 
-    print("skipping %s, thumbnail already exists." % (pdf_path, ))
+  if os.path.isfile(thumb_path):
+    if args.verbose is True:
+      print("skipping %s, thumbnail already exists." % (pdf_path, ))
     continue
 
   print("%d/%d processing %s" % (i, len(pdf_files), p))
@@ -50,7 +60,7 @@ for i,p in enumerate(pdf_files):
       f = os.path.join(Config.tmp_dir, 'thumb-%d.png' % (i,))
       f2= os.path.join(Config.tmp_dir, 'thumbbuf-%d.png' % (i,))
       if os.path.isfile(f):
-        cmd = 'mv %s %s' % (f, f2)
+        cmd = 'move %s %s' % (f, f2)
         os.system(cmd)
         # okay originally I was going to issue an rm call, but I am too terrified of
         # running scripted rm queries, so what we will do is instead issue a "mv" call
@@ -60,7 +70,7 @@ for i,p in enumerate(pdf_files):
 
   # spawn async. convert can unfortunately enter an infinite loop, have to handle this.
   # this command will generate 8 independent images thumb-0.png ... thumb-7.png of the thumbnails
-  pp = Popen(['convert', '%s[0-7]' % (pdf_path, ), '-thumbnail', 'x156', os.path.join(Config.tmp_dir, 'thumb.png')])
+  pp = Popen(['magick', '%s[0-7]' % (pdf_path, ), '-thumbnail', 'x156', os.path.join(Config.tmp_dir, 'thumb.png')])
   t0 = time.time()
   while time.time() - t0 < 20: # give it 15 seconds deadline
     ret = pp.poll()
@@ -76,11 +86,15 @@ for i,p in enumerate(pdf_files):
   if not os.path.isfile(os.path.join(Config.tmp_dir, 'thumb-0.png')):
     # failed to render pdf, replace with missing image
     missing_thumb_path = os.path.join('static', 'missing.jpg')
-    os.system('cp %s %s' % (missing_thumb_path, thumb_path))
+    shutil.copy(missing_thumb_path, thumb_path)
     print("could not render pdf, creating a missing image placeholder")
   else:
     cmd = "montage -mode concatenate -quality 80 -tile x1 %s %s" % (os.path.join(Config.tmp_dir, 'thumb-*.png'), thumb_path)
     print(cmd)
     os.system(cmd)
-
+    
+    #now upload files to cloudinary (note path here not necessarily system OS format)
+    print('Uploading to Cloudinary...')
+    cloudinary.uploader.upload('static/thumbs/' + p + '.jpg', folder = "thumbs/", use_filename = "1", unique_filename = "0", resource_type = "raw", cloud_name=Config.cloudinary_cloud_name, api_key=Config.cloudinary_api_key, api_secret=Config.cloudinary_api_secret)
+    
   time.sleep(0.01) # silly way for allowing for ctrl+c termination

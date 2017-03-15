@@ -1,17 +1,22 @@
-# feedparser is only if you want to scrape arxiv
-feedparser
-numpy
-scipy
+# this list is pruned to only contain packages needed to serve on Heroku
 
-# sciki-learn is only for sparse arrays
-scikit-learn
+numpy
+python-dateutil
+flask
+flask_limiter
+tornado
+
+# because as.db is now running off PostgreSQL
+psycopg2
+
+# needed to search on arXiv (save memory)
+feedparser
+
+# comments
+pymongo
 
 # twitter
 twitter
 pytz
 
-# the following are only for serve.py
-python-dateutil
-flask
-flask_limiter
-tornado
+

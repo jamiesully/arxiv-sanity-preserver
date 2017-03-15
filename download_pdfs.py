@@ -1,7 +1,7 @@
 import os
 import time
 import datetime
-import dateutil
+import dateutil.parser
 import pickle
 import shutil
 import random

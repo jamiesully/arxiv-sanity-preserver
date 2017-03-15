@@ -10,16 +10,29 @@ import tempfile
 class Config(object):
     # main paper information repo file
     db_path = 'db.p'
+    
     # intermediate processing folders
     pdf_dir = os.path.join('data', 'pdf')
     txt_dir = os.path.join('data', 'txt')
     thumbs_dir_local = os.path.join('static', 'thumbs')
-    thumbs_dir = 'http://res.cloudinary.com/hhtzrschc/raw/upload/v1488835904/thumbs/'
+    try:
+        cloudinary_path = os.environ["CLOUDINARY_URL"]
+    except:
+        cloudinary_path = os.popen("heroku config:get CLOUDINARY_URL -a hepthio").read()[:-1]
+    cloudinary_cloud_name = cloudinary_path.split('@')[1]
+    cloudinary_api_key = cloudinary_path.split(':')[1][2:]
+    cloudinary_api_secret = cloudinary_path.split(':')[2].split('@')[0]
+    
+    thumbs_dir = 'http://res.cloudinary.com/'+cloudinary_cloud_name+'/raw/upload/thumbs/'
+    
     # intermediate pickles
     tfidf_path = 'tfidf.p'
     meta_path = 'tfidf_meta.p'
     sim_path = 'sim_dict.p'
     user_sim_path = 'user_sim.p'
+    search_dict_path = 'search_dict.p'
+    serve_cache_path = 'serve_cache.p'
+    
     # sql database file
     db_serve_path = 'db2.p' # an enriched db.p with various preprocessing info
     database_path = 'as.db'
@@ -27,9 +40,14 @@ class Config(object):
         heroku_database_path = os.environ["DATABASE_URL"]
     except:
         heroku_database_path = DATABASE_URL=os.popen("heroku config:get DATABASE_URL -a hepthio").read()[:-1]
-    search_dict_path = 'search_dict.p'
-    serve_cache_path = 'serve_cache.p'
     
+    # Heroku mongo paths and variables
+    try:
+        heroku_mongo_path = os.environ["MONGODB_URI"]
+    except:
+        heroku_mongo_path = DATABASE_URL=os.popen("heroku config:get MONGODB_URI -a hepthio").read()[:-1]
+    mongo_db_name= heroku_mongo_path.split('/')[-1]
+
     banned_path = 'banned.txt' # for twitter users who are banned
     tmp_dir = 'tmp'
 
